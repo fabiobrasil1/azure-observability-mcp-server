@@ -71,13 +71,19 @@ azure-observability-mcp-server/
   README.md
   requirements.txt
   .gitignore
+  .env.example
   src/
     __init__.py
-    mcp_server.py          # servidor MCP principal (registro + invocação de tools)
-    azure_appinsights.py   # cliente para Application Insights / Logs (KQL)
+    mcp_server.py              # servidor MCP principal (registro + invocação de tools)
+    mcp_protocol_server.py      # servidor MCP oficial (JSON-RPC 2.0)
+    mcp_stdio_server.py         # servidor MCP simples (JSON-lines, para testes)
+    cli_test.py                # CLI de teste para tools
+    azure_appinsights.py       # cliente para Application Insights / Logs (KQL)
+    appservice_logstream.py    # cliente para logstream do App Service
     tools/
-      __init__.py          # contrato: expor funções que retornam listas de ToolDefinition
-      logs_tools.py        # tools de alto nível (erros recentes, requests lentas, trace by operation)
+      __init__.py              # contrato: expor funções que retornam listas de ToolDefinition
+      logs_tools.py            # tools de alto nível (erros recentes, requests lentas, trace by operation)
+      appservice_tools.py      # tools para logstream do App Service
 ```
 
 ---
@@ -157,7 +163,7 @@ Esses contratos ainda são rascunhos (“draft”) e podem ser ajustados conform
 
 ### Plano de implementação por fases
 
-1. **Fase 1 — Esqueleto (status: em andamento)**
+1. **Fase 1 — Esqueleto (status: ✅ completo)**
    - Definir `AzureObservabilityMCPServer` com:
      - Registro de tools (`register_tool`).
      - Listagem (`list_tools`).
@@ -165,20 +171,23 @@ Esses contratos ainda são rascunhos (“draft”) e podem ser ajustados conform
    - Definir esqueleto do `AzureAppInsightsClient` (sem chamada real à API).
    - Definir pacote `tools` e contrato básico para `logs_tools.py`.
 
-2. **Fase 2 — Cliente de logs stub + tools iniciais**
+2. **Fase 2 — Cliente de logs stub + tools iniciais (status: ✅ completo)**
    - Implementar `AzureAppInsightsClient.query_kql` ainda como stub (retorno fake), para permitir desenvolver o shape das respostas.
    - Implementar `logs_tools.py` chamando o stub e retornando estruturas de dados de alto nível.
    - Registrar as tools iniciais (`ai_errors_recent`, `ai_requests_slow`, `ai_trace_by_operation`) no servidor MCP.
 
-3. **Fase 3 — Integração real com Azure**
+3. **Fase 3 — Integração real com Azure (status: ✅ completo)**
    - Implementar autenticação OAuth2 client_credentials via `httpx`.
    - Implementar chamada real ao endpoint de Logs (KQL) do Application Insights / Log Analytics.
    - Ajustar as queries KQL das tools para refletir a estrutura de dados real dos workspaces.
+   - Implementar cliente para logstream do App Service.
 
-4. **Fase 4 — Integração com um cliente MCP**
-   - Implementar o loop MCP via stdin/stdout.
-   - Testar o servidor plugado em um cliente MCP (Cursor / Claude Desktop).
-   - Refinar descriptions, schemas e formatos de resposta com base no uso real.
+4. **Fase 4 — Integração com um cliente MCP (status: ✅ completo)**
+   - Implementar o loop MCP via stdin/stdout (protocolo simples).
+   - Implementar servidor MCP oficial (JSON-RPC 2.0) compatível com Cursor/Claude Desktop.
+   - CLI de teste para validação local.
+   - (Pendente) Testar o servidor plugado em um cliente MCP (Cursor / Claude Desktop).
+   - (Pendente) Refinar descriptions, schemas e formatos de resposta com base no uso real.
 
 5. **Fase 5 — Extensões futuras**
    - Suporte a múltiplos workspaces / subscriptions.
@@ -214,7 +223,21 @@ Exemplo para o logstream do App Service:
 python -m src.cli_test --tool appservice_logstream_tail --arg duration_seconds=10 --arg max_lines=50
 ```
 
-3) Rodar o servidor MCP via stdin/stdout (protocolo simples por JSON-lines):
+3) Rodar o servidor MCP oficial (JSON-RPC 2.0 - recomendado para Cursor/Claude Desktop):
+
+```bash
+python -m src.mcp_protocol_server
+```
+
+Exemplos de mensagens JSON-RPC 2.0:
+
+```json
+{"jsonrpc":"2.0","id":1,"method":"initialize","params":{}}
+{"jsonrpc":"2.0","id":2,"method":"tools/list","params":{}}
+{"jsonrpc":"2.0","id":3,"method":"tools/call","params":{"name":"ai_errors_recent","arguments":{"service_name":"api","timespan":"PT1H"}}}
+```
+
+4) Rodar o servidor MCP via stdin/stdout (protocolo simples por JSON-lines - para testes):
 
 ```bash
 python -m src.mcp_stdio_server
