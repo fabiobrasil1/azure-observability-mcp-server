@@ -165,8 +165,18 @@ if __name__ == "__main__":
     # Pequeno teste manual do esqueleto (sem MCP ainda)
     import asyncio
     import os
+    from pathlib import Path
+
+    from dotenv import load_dotenv
 
     from src.azure_appinsights import AzureAppInsightsClient, AzureCredentials
+
+    # Carregar variáveis de ambiente do .env
+    env_path = Path(__file__).parent.parent / ".env"
+    if env_path.exists():
+        load_dotenv(env_path)
+    else:
+        load_dotenv()  # Tenta carregar do diretório atual
 
     missing = [
         name

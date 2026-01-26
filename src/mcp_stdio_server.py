@@ -14,7 +14,10 @@ import asyncio
 import json
 import os
 import sys
+from pathlib import Path
 from typing import Any, Dict, List
+
+from dotenv import load_dotenv
 
 from src.azure_appinsights import AzureAppInsightsClient, AzureCredentials
 from src.appservice_logstream import (
@@ -74,6 +77,13 @@ async def _handle_messages(server: AzureObservabilityMCPServer) -> None:
 
 
 async def _run() -> None:
+    # Carregar variáveis de ambiente do .env
+    env_path = Path(__file__).parent.parent / ".env"
+    if env_path.exists():
+        load_dotenv(env_path)
+    else:
+        load_dotenv()  # Tenta carregar do diretório atual
+
     _require_env(
         [
             "AZURE_TENANT_ID",
