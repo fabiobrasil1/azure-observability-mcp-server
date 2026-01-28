@@ -97,6 +97,43 @@ class AzureAppInsightsClient:
             return f"https://api.applicationinsights.io/v1/apps/{self.app_id}/query"
         return f"https://api.loganalytics.io/v1/workspaces/{self.workspace_id}/query"
 
+    def _get_table_name(self, base_name: str) -> str:
+        """
+        Retorna o nome correto da tabela baseado no endpoint usado.
+        
+        No endpoint do Application Insights, as tabelas são: exceptions, requests, traces, dependencies
+        No endpoint do Log Analytics Workspace, as tabelas têm prefixo App: AppExceptions, AppRequests, AppTraces, AppDependencies
+        
+        Args:
+            base_name: Nome base da tabela (ex: "exceptions", "requests", "traces", "dependencies")
+            
+        Returns:
+            Nome correto da tabela para o endpoint atual
+        """
+        if self.app_id:
+            # Endpoint do Application Insights usa nomes sem prefixo
+            return base_name
+        else:
+            # Endpoint do Log Analytics Workspace usa prefixo "App"
+            return f"App{base_name.capitalize()}"
+
+    def _get_role_name_column(self) -> str:
+        """
+        Retorna o nome correto da coluna de role name baseado no endpoint usado.
+        
+        No endpoint do Application Insights, a coluna é: cloud_RoleName
+        No endpoint do Log Analytics Workspace, a coluna é: AppRoleName
+        
+        Returns:
+            Nome correto da coluna para o endpoint atual
+        """
+        if self.app_id:
+            # Endpoint do Application Insights usa cloud_RoleName
+            return "cloud_RoleName"
+        else:
+            # Endpoint do Log Analytics Workspace usa AppRoleName
+            return "AppRoleName"
+
     async def _get_access_token(self) -> Optional[str]:
         now = time.time()
         if self._access_token and now < (self._expires_at - 60):
