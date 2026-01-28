@@ -134,6 +134,98 @@ class AzureAppInsightsClient:
             # Endpoint do Log Analytics Workspace usa AppRoleName
             return "AppRoleName"
 
+    def _get_timestamp_column(self) -> str:
+        """
+        Retorna o nome correto da coluna de timestamp baseado no endpoint usado.
+        
+        No endpoint do Application Insights, a coluna é: timestamp
+        No endpoint do Log Analytics Workspace, a coluna é: TimeGenerated
+        
+        Returns:
+            Nome correto da coluna para o endpoint atual
+        """
+        if self.app_id:
+            # Endpoint do Application Insights usa timestamp
+            return "timestamp"
+        else:
+            # Endpoint do Log Analytics Workspace usa TimeGenerated
+            return "TimeGenerated"
+
+    def _get_exception_columns(self) -> Dict[str, str]:
+        """
+        Retorna os nomes corretos das colunas de exception baseado no endpoint usado.
+        
+        Returns:
+            Dicionário com os nomes das colunas: problemId, outerMessage, operation_Id
+        """
+        if self.app_id:
+            # Endpoint do Application Insights
+            return {
+                "problemId": "problemId",
+                "outerMessage": "outerMessage",
+                "operation_Id": "operation_Id",
+            }
+        else:
+            # Endpoint do Log Analytics Workspace
+            return {
+                "problemId": "ProblemId",  # Com P maiúsculo
+                "outerMessage": "OuterMessage",  # Com O maiúsculo
+                "operation_Id": "OperationId",  # OperationId
+            }
+
+    def _get_request_columns(self) -> Dict[str, str]:
+        """
+        Retorna os nomes corretos das colunas de request baseado no endpoint usado.
+        
+        Returns:
+            Dicionário com os nomes das colunas: duration, resultCode, name, url, operation_Id
+        """
+        if self.app_id:
+            # Endpoint do Application Insights
+            return {
+                "duration": "duration",
+                "resultCode": "resultCode",
+                "name": "name",
+                "url": "url",
+                "operation_Id": "operation_Id",
+            }
+        else:
+            # Endpoint do Log Analytics Workspace
+            return {
+                "duration": "DurationMs",  # DurationMs em Log Analytics
+                "resultCode": "ResultCode",  # ResultCode com R maiúsculo
+                "name": "Name",  # Name com N maiúsculo
+                "url": "Url",  # Url com U maiúsculo
+                "operation_Id": "OperationId",  # OperationId
+            }
+
+    def _get_trace_columns(self) -> Dict[str, str]:
+        """
+        Retorna os nomes corretos das colunas de trace/dependency baseado no endpoint usado.
+        
+        Returns:
+            Dicionário com os nomes das colunas: itemType, message, duration, resultCode, operation_Id
+        """
+        if self.app_id:
+            # Endpoint do Application Insights
+            return {
+                "itemType": "itemType",
+                "message": "message",
+                "duration": "duration",
+                "resultCode": "resultCode",
+                "operation_Id": "operation_Id",
+            }
+        else:
+            # Endpoint do Log Analytics Workspace
+            # itemType não existe diretamente, usamos Type ou o nome da tabela
+            return {
+                "itemType": "Type",  # Type indica a tabela de origem
+                "message": "Message",  # Message com M maiúsculo
+                "duration": "DurationMs",  # DurationMs em Log Analytics
+                "resultCode": "ResultCode",  # ResultCode com R maiúsculo
+                "operation_Id": "OperationId",  # OperationId
+            }
+
     async def _get_access_token(self) -> Optional[str]:
         now = time.time()
         if self._access_token and now < (self._expires_at - 60):
