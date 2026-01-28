@@ -178,13 +178,13 @@ if __name__ == "__main__":
     else:
         load_dotenv()  # Tenta carregar do diretório atual
 
+    # Validar variáveis obrigatórias
     missing = [
         name
         for name in [
             "AZURE_TENANT_ID",
             "AZURE_CLIENT_ID",
             "AZURE_CLIENT_SECRET",
-            "AZURE_WORKSPACE_ID",
         ]
         if not os.getenv(name)
     ]
@@ -194,6 +194,14 @@ if __name__ == "__main__":
             print(f"- {name}")
         print("Defina as variaveis e rode novamente.")
         raise SystemExit(1)
+    
+    # Validar que temos AZURE_APP_ID OU AZURE_WORKSPACE_ID
+    app_id = os.getenv("AZURE_APP_ID")
+    workspace_id = os.getenv("AZURE_WORKSPACE_ID")
+    
+    if not app_id and not workspace_id:
+        print("Erro: E necessario fornecer AZURE_APP_ID ou AZURE_WORKSPACE_ID.")
+        raise SystemExit(1)
 
     credentials = AzureCredentials(
         tenant_id=os.getenv("AZURE_TENANT_ID", ""),
@@ -201,9 +209,9 @@ if __name__ == "__main__":
         client_secret=os.getenv("AZURE_CLIENT_SECRET", ""),
     )
     logs_client = AzureAppInsightsClient(
-        workspace_id=os.getenv("AZURE_WORKSPACE_ID", ""),
+        workspace_id=workspace_id or "",
         credentials=credentials,
-        app_id=os.getenv("AZURE_APP_ID"),
+        app_id=app_id,
     )
     server = AzureObservabilityMCPServer(logs_client=logs_client)
 

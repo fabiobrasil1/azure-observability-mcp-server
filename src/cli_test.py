@@ -12,7 +12,7 @@ import json
 import os
 import sys
 from pathlib import Path
-from typing import Any, Dict, List
+from typing import Any, Dict, List, Optional
 
 from dotenv import load_dotenv
 
@@ -65,6 +65,22 @@ def _parse_kv_args(pairs: List[str]) -> Dict[str, Any]:
     return parsed
 
 
+def _build_appservice_client() -> Optional[AppServiceLogStreamClient]:
+    if not (
+        os.getenv("APP_SERVICE_NAME")
+        and os.getenv("APP_SERVICE_PUBLISH_USER")
+        and os.getenv("APP_SERVICE_PUBLISH_PASS")
+    ):
+        return None
+
+    credentials = AppServicePublishCredentials(
+        app_name=os.getenv("APP_SERVICE_NAME", ""),
+        username=os.getenv("APP_SERVICE_PUBLISH_USER", ""),
+        password=os.getenv("APP_SERVICE_PUBLISH_PASS", ""),
+    )
+    return AppServiceLogStreamClient(credentials)
+
+
 async def _run(tool_name: str, arguments: Dict[str, Any]) -> Dict[str, Any]:
     # Carregar variáveis de ambiente do .env
     env_path = Path(__file__).parent.parent / ".env"
@@ -73,14 +89,22 @@ async def _run(tool_name: str, arguments: Dict[str, Any]) -> Dict[str, Any]:
     else:
         load_dotenv()  # Tenta carregar do diretório atual
 
+    # Validar variáveis obrigatórias
     _require_env(
         [
             "AZURE_TENANT_ID",
             "AZURE_CLIENT_ID",
             "AZURE_CLIENT_SECRET",
-            "AZURE_WORKSPACE_ID",
         ]
     )
+    
+    # Validar que temos AZURE_APP_ID OU AZURE_WORKSPACE_ID
+    app_id = os.getenv("AZURE_APP_ID")
+    workspace_id = os.getenv("AZURE_WORKSPACE_ID")
+    
+    if not app_id and not workspace_id:
+        print("Erro: E necessario fornecer AZURE_APP_ID ou AZURE_WORKSPACE_ID.")
+        raise SystemExit(1)
 
     credentials = AzureCredentials(
         tenant_id=os.getenv("AZURE_TENANT_ID", ""),
@@ -88,9 +112,9 @@ async def _run(tool_name: str, arguments: Dict[str, Any]) -> Dict[str, Any]:
         client_secret=os.getenv("AZURE_CLIENT_SECRET", ""),
     )
     logs_client = AzureAppInsightsClient(
-        workspace_id=os.getenv("AZURE_WORKSPACE_ID", ""),
+        workspace_id=workspace_id or "",
         credentials=credentials,
-        app_id=os.getenv("AZURE_APP_ID"),
+        app_id=app_id,
     )
     appservice_client = _build_appservice_client()
     server = AzureObservabilityMCPServer(
@@ -120,19 +144,3 @@ def main(argv: List[str]) -> int:
 
 if __name__ == "__main__":
     raise SystemExit(main(sys.argv[1:]))
-
-
-def _build_appservice_client() -> AppServiceLogStreamClient | None:
-    if not (
-        os.getenv("APP_SERVICE_NAME")
-        and os.getenv("APP_SERVICE_PUBLISH_USER")
-        and os.getenv("APP_SERVICE_PUBLISH_PASS")
-    ):
-        return None
-
-    credentials = AppServicePublishCredentials(
-        app_name=os.getenv("APP_SERVICE_NAME", ""),
-        username=os.getenv("APP_SERVICE_PUBLISH_USER", ""),
-        password=os.getenv("APP_SERVICE_PUBLISH_PASS", ""),
-    )
-    return AppServiceLogStreamClient(credentials)

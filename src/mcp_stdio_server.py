@@ -84,14 +84,27 @@ async def _run() -> None:
     else:
         load_dotenv()  # Tenta carregar do diretório atual
 
+    # Validar variáveis obrigatórias
     _require_env(
         [
             "AZURE_TENANT_ID",
             "AZURE_CLIENT_ID",
             "AZURE_CLIENT_SECRET",
-            "AZURE_WORKSPACE_ID",
         ]
     )
+    
+    # Validar que temos AZURE_APP_ID OU AZURE_WORKSPACE_ID
+    app_id = os.getenv("AZURE_APP_ID")
+    workspace_id = os.getenv("AZURE_WORKSPACE_ID")
+    
+    if not app_id and not workspace_id:
+        _write_json(
+            {
+                "type": "error",
+                "message": "E necessario fornecer AZURE_APP_ID ou AZURE_WORKSPACE_ID.",
+            }
+        )
+        raise SystemExit(1)
 
     credentials = AzureCredentials(
         tenant_id=os.getenv("AZURE_TENANT_ID", ""),
@@ -99,9 +112,9 @@ async def _run() -> None:
         client_secret=os.getenv("AZURE_CLIENT_SECRET", ""),
     )
     logs_client = AzureAppInsightsClient(
-        workspace_id=os.getenv("AZURE_WORKSPACE_ID", ""),
+        workspace_id=workspace_id or "",
         credentials=credentials,
-        app_id=os.getenv("AZURE_APP_ID"),
+        app_id=app_id,
     )
     appservice_client = _build_appservice_client()
     server = AzureObservabilityMCPServer(
