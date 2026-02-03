@@ -1,243 +1,147 @@
-## Azure Observability MCP Server
+# Azure Observability MCP Server
 
-Servidor MCP (Model Context Protocol) para consultar e analisar logs de aplicações .NET/Node/Java/etc. rodando na Azure, usando **Application Insights** / **Azure Monitor Logs** como fonte de dados.
-
-O objetivo é permitir que um cliente MCP (ex.: Cursor, Claude Desktop) faça perguntas em linguagem natural sobre o comportamento das aplicações, e que este servidor traduza essas perguntas em consultas KQL e agregações de logs.
-
-### Objetivo
-
-- Expor, via MCP, ferramentas que permitam:
-  - **Buscar logs** (traces, requests, exceptions) por período.
-  - **Filtrar erros recentes** de um serviço específico.
-  - **Inspecionar uma requisição** completa a partir de `operation_Id` / `traceId`.
-  - (Futuro) **Combinar logs** com outras fontes de observabilidade da Azure (metrics, alerts, etc.).
+Servidor MCP (Model Context Protocol) para consultar e analisar logs de aplicações na Azure usando **Application Insights** e **Azure Monitor Logs**. O objetivo é expor **ferramentas semânticas** para um agente/LLM investigar saúde de serviços, erros, regressões e correlação de falhas **sem escrever KQL**.
 
 ---
 
-### Arquitetura em alto nível
-
-- **Cliente MCP (ex.: Cursor)**  
-  - Envia requisições `list_tools` e `call_tool` para este servidor via protocolo MCP (stdin/stdout).
-
-- **Servidor MCP (`AzureObservabilityMCPServer`)**
-  - Mantém um registro de tools (`ToolDefinition`).
-  - Responde a `list_tools` com o catálogo de tools disponíveis.
-  - Encaminha `call_tool` para o handler assíncrono de cada tool.
-
-- **Camada de domínio / tools de logs (`src/tools`)**
-  - Implementa funções de alto nível como:
-    - `ai_errors_recent`
-    - `ai_requests_slow`
-    - `ai_trace_by_operation`
-    - `appservice_logstream_tail`
-  - Cada função é exposta como uma **tool MCP**, com:
-    - `name`
-    - `description`
-    - `inputSchema` (JSON Schema compatível com MCP)
-    - `handler` (função async que chama o cliente de logs).
-
-- **Cliente de logs Azure (`AzureAppInsightsClient`)**
-  - Encapsula:
-    - Autenticação via OAuth2 (client_credentials) com Entra ID.
-    - Execução de queries KQL contra Application Insights / Log Analytics.
-  - Expõe métodos de uso interno, por exemplo:
-    - `query_kql(query: str, timespan: str)`
-    - (Futuro) Helpers específicos, como `get_recent_errors(...)`, `get_slow_requests(...)`.
-
-Fluxo simplificado:
-
-```text
-Cliente MCP --> Servidor MCP (this repo) --> Tools de logs --> AzureAppInsightsClient --> Azure Logs (KQL)
-```
-
----
-
-### Stack técnica (planejada)
-
-- **Linguagem**: Python 3.10+
-- **HTTP client**: `httpx` (async)
-- **Configuração**:
-  - Variáveis de ambiente (tenant, client_id, client_secret, workspace_id, etc.).
-  - (Futuro) Arquivo `config.yaml` para facilitar múltiplos ambientes.
-- **Autenticação Azure**: OAuth2 (client_credentials) contra Entra ID.
-- **Protocolo**: MCP (Model Context Protocol) via stdin/stdout (fase posterior).
-
----
-
-### Estrutura inicial (proposta)
-
-```text
-azure-observability-mcp-server/
-  README.md
-  requirements.txt
-  .gitignore
-  .env.example
-  src/
-    __init__.py
-    mcp_server.py              # servidor MCP principal (registro + invocação de tools)
-    mcp_protocol_server.py      # servidor MCP oficial (JSON-RPC 2.0)
-    mcp_stdio_server.py         # servidor MCP simples (JSON-lines, para testes)
-    cli_test.py                # CLI de teste para tools
-    azure_appinsights.py       # cliente para Application Insights / Logs (KQL)
-    appservice_logstream.py    # cliente para logstream do App Service
-    tools/
-      __init__.py              # contrato: expor funções que retornam listas de ToolDefinition
-      logs_tools.py            # tools de alto nível (erros recentes, requests lentas, trace by operation)
-      appservice_tools.py      # tools para logstream do App Service
-```
-
----
-
-### Contrato das tools MCP (draft)
-
-Cada tool MCP será representada por um `ToolDefinition` com o seguinte shape:
-
-```python
-ToolDefinition(
-    name: str,
-    description: str,
-    input_schema: Dict[str, Any],  # JSON Schema
-    handler: Callable[..., Awaitable[Dict[str, Any]]],
-)
-```
-
-O método `list_tools()` do servidor MCP retornará uma lista serializável com:
-
-- `name`: nome da tool, ex.: `"ai_errors_recent"`.
-- `description`: descrição curta em texto.
-- `inputSchema`: objeto JSON Schema descrevendo os campos aceitos pela tool.
-
-O método `call_tool(name, arguments)`:
-
-- Recebe o nome da tool e um dicionário `arguments` (já validado pelo cliente MCP).
-- Localiza o `ToolDefinition` correspondente.
-- Chama `await tool.handler(**arguments)`.
-- Retorna um dicionário com o resultado (erro ou dados de logs agregados).
-
----
-
-### Tools planejadas (primeira fase)
-
-1. **`ai_errors_recent`**
-   - **Objetivo**: listar erros/exceptions recentes de um serviço.
-   - **Inputs (draft)**:
-     - `service_name: string` (ex.: nome do roleName, cloud_RoleName, etc.).
-     - `timespan: string` (ex.: `"PT1H"`, `"P1D"`).
-     - (Opcional) `severity: string` (ex.: `"Error"`, `"Critical"`).
-   - **Output (draft)**:
-     - Lista de erros com timestamp, mensagem, operação, e alguns campos de contexto.
-
-2. **`ai_requests_slow`**
-   - **Objetivo**: identificar requisições lentas acima de um certo limiar.
-   - **Inputs (draft)**:
-     - `service_name: string`
-     - `timespan: string`
-     - `duration_threshold_ms: number` (ex.: `1000` para 1 segundo).
-   - **Output (draft)**:
-     - Lista de requisições lentas (url, duration, timestamp, statusCode, operation_Id).
-
-3. **`ai_trace_by_operation`**
-   - **Objetivo**: inspecionar o “trace completo” de uma operação.
-   - **Inputs (draft)**:
-     - `operation_id: string` ou `trace_id: string`.
-     - `timespan: string` (para limitar o escopo da busca).
-   - **Output (draft)**:
-     - Estrutura agregada com:
-       - Request principal.
-       - Dependências (chamadas externas).
-       - Exceptions associadas.
-       - Logs/traces correlacionados.
-
-4. **`appservice_logstream_tail`**
-   - **Objetivo**: ler o Log Stream do App Service em tempo real.
-   - **Inputs (draft)**:
-     - `duration_seconds: number` (ex.: `10`)
-     - `max_lines: number` (ex.: `200`)
-     - `contains: string` (opcional, filtro por substring)
-   - **Output (draft)**:
-     - Lista de linhas de log coletadas no intervalo.
-
-Esses contratos ainda são rascunhos (“draft”) e podem ser ajustados conforme formos testando com dados reais.
-
----
-
-### Plano de implementação por fases
-
-1. **Fase 1 — Esqueleto (status: ✅ completo)**
-   - Definir `AzureObservabilityMCPServer` com:
-     - Registro de tools (`register_tool`).
-     - Listagem (`list_tools`).
-     - Invocação (`call_tool`).
-   - Definir esqueleto do `AzureAppInsightsClient` (sem chamada real à API).
-   - Definir pacote `tools` e contrato básico para `logs_tools.py`.
-
-2. **Fase 2 — Cliente de logs stub + tools iniciais (status: ✅ completo)**
-   - Implementar `AzureAppInsightsClient.query_kql` ainda como stub (retorno fake), para permitir desenvolver o shape das respostas.
-   - Implementar `logs_tools.py` chamando o stub e retornando estruturas de dados de alto nível.
-   - Registrar as tools iniciais (`ai_errors_recent`, `ai_requests_slow`, `ai_trace_by_operation`) no servidor MCP.
-
-3. **Fase 3 — Integração real com Azure (status: ✅ completo)**
-   - Implementar autenticação OAuth2 client_credentials via `httpx`.
-   - Implementar chamada real ao endpoint de Logs (KQL) do Application Insights / Log Analytics.
-   - Ajustar as queries KQL das tools para refletir a estrutura de dados real dos workspaces.
-   - Implementar cliente para logstream do App Service.
-
-4. **Fase 4 — Integração com um cliente MCP (status: ✅ completo)**
-   - Implementar o loop MCP via stdin/stdout (protocolo simples).
-   - Implementar servidor MCP oficial (JSON-RPC 2.0) compatível com Cursor/Claude Desktop.
-   - CLI de teste para validação local.
-   - (Pendente) Testar o servidor plugado em um cliente MCP (Cursor / Claude Desktop).
-   - (Pendente) Refinar descriptions, schemas e formatos de resposta com base no uso real.
-
-5. **Fase 5 — Extensões futuras**
-   - Suporte a múltiplos workspaces / subscriptions.
-   - Combinar logs com métricas e alertas.
-   - Adicionar ferramentas de “health overview” e “sLO/SLA checks”.
-
----
-
-### Como rodar (teste local)
-
-1) Configure as variáveis de ambiente (veja `.env.example`):
+## Arquitetura em alto nível
 
 ```
-AZURE_TENANT_ID=...
-AZURE_CLIENT_ID=...
-AZURE_CLIENT_SECRET=...
-AZURE_WORKSPACE_ID=...
-AZURE_APP_ID=...  # opcional
-APP_SERVICE_NAME=...  # opcional (para logstream)
-APP_SERVICE_PUBLISH_USER=...
-APP_SERVICE_PUBLISH_PASS=...
+Cliente MCP (Cursor, Claude, etc.)  →  Servidor MCP  →  Tools (semânticas)  →  AzureAppInsightsClient  →  Azure Logs (KQL)
 ```
 
-2) Teste rápido com o script CLI:
+- O servidor expõe **tools** com parâmetros de alto nível (`service_name`, `timespan`, `operation_id`, etc.).
+- As tools montam KQL internamente e chamam o cliente Azure; **não há tool de KQL raw exposta** por padrão (evita injeção e exfiltração).
+- Autenticação: OAuth2 **client_credentials** (Entra ID). Configuração via **variáveis de ambiente**.
+
+Documentação detalhada de diagnóstico e roadmap: **[docs/MCP_OBSERVABILITY_REVIEW.md](docs/MCP_OBSERVABILITY_REVIEW.md)**.
+
+---
+
+## Como configurar
+
+### 1. Variáveis de ambiente
+
+Copie `.env.example` para `.env` e preencha:
+
+| Variável | Obrigatório | Descrição |
+|----------|-------------|-----------|
+| `AZURE_TENANT_ID` | Sim | Tenant do Entra ID (Azure AD). |
+| `AZURE_CLIENT_ID` | Sim | Client ID do App Registration. |
+| `AZURE_CLIENT_SECRET` | Sim | Client secret do App Registration. |
+| `AZURE_WORKSPACE_ID` | Sim* | ID do Log Analytics Workspace (para API Log Analytics). |
+| `AZURE_APP_ID` | Sim* | ID do Application Insights (para API Application Insights). |
+| `APP_SERVICE_NAME` | Não | Nome do App Service (para logstream). |
+| `APP_SERVICE_PUBLISH_USER` | Não | Usuário de publicação (Kudu). |
+| `APP_SERVICE_PUBLISH_PASS` | Não | Senha de publicação (Kudu). |
+
+\* É necessário **um dos dois**: `AZURE_WORKSPACE_ID` (Log Analytics) **ou** `AZURE_APP_ID` (Application Insights). O cliente usa escopos e endpoints diferentes conforme o que for informado.
+
+### 2. Permissões no Azure
+
+- Para **Application Insights**: App Registration com permissão **Application Insights Data Reader** (ou role equivalente) no recurso/Resource Group.
+- Para **Log Analytics**: App Registration com permissão **Log Analytics Reader** no workspace.
+- Princípio de least privilege: use um App Registration dedicado a leitura de logs, sem permissões de escrita ou de outros recursos.
+
+### 3. Dependências
 
 ```bash
-python -m src.cli_test --tool ai_errors_recent --arg service_name=api --arg timespan=PT1H
+pip install -r requirements.txt
 ```
 
-Exemplo para o logstream do App Service:
+---
 
-```bash
-python -m src.cli_test --tool appservice_logstream_tail --arg duration_seconds=10 --arg max_lines=50
+## Lista de tools e exemplos
+
+As tools são listadas pelo método MCP `tools/list`. Abaixo: nome, descrição, parâmetros e exemplo de chamada.
+
+### Logs (Application Insights / Log Analytics)
+
+| Tool | Descrição | Parâmetros | Exemplo |
+|------|-----------|------------|---------|
+| **ai_errors_recent** | Lista erros/exceptions recentes de um serviço. | `service_name` (string), `timespan` (string, ex. PT1H, P1D), `severity` (number, opcional, default 3) | Ver abaixo |
+| **ai_requests_slow** | Requisições lentas acima de um limiar. | `service_name`, `timespan`, `duration_threshold_ms` (number) | Ver abaixo |
+| **ai_trace_by_operation** | Trace completo por operation_id ou trace_id. | `timespan` (obrigatório), `operation_id` ou `trace_id` (um dos dois) | Ver abaixo |
+
+### App Service (log stream)
+
+| Tool | Descrição | Parâmetros | Exemplo |
+|------|-----------|------------|---------|
+| **appservice_logstream_tail** | Lê o Log Stream do App Service em tempo real. | `duration_seconds` (number, default 10), `max_lines` (number, default 200), `contains` (string, opcional) | Ver abaixo |
+
+### Exemplos de chamada (JSON-RPC 2.0)
+
+**Listar tools:**
+
+```json
+{"jsonrpc":"2.0","id":1,"method":"tools/list","params":{}}
 ```
 
-3) Rodar o servidor MCP oficial (JSON-RPC 2.0 - recomendado para Cursor/Claude Desktop):
+**Erros recentes (última 1h, serviço "api"):**
+
+```json
+{"jsonrpc":"2.0","id":2,"method":"tools/call","params":{"name":"ai_errors_recent","arguments":{"service_name":"api","timespan":"PT1H"}}}
+```
+
+**Requests lentas (> 1s, última 2h):**
+
+```json
+{"jsonrpc":"2.0","id":3,"method":"tools/call","params":{"name":"ai_requests_slow","arguments":{"service_name":"api","timespan":"PT2H","duration_threshold_ms":1000}}}
+```
+
+**Trace por operation_id:**
+
+```json
+{"jsonrpc":"2.0","id":4,"method":"tools/call","params":{"name":"ai_trace_by_operation","arguments":{"operation_id":"abc123","timespan":"PT24H"}}}
+```
+
+**Log stream (10s, até 50 linhas):**
+
+```json
+{"jsonrpc":"2.0","id":5,"method":"tools/call","params":{"name":"appservice_logstream_tail","arguments":{"duration_seconds":10,"max_lines":50}}}
+```
+
+### Formato da resposta (estado atual)
+
+A resposta de `tools/call` é enviada como texto JSON no campo `content[0].text`. O conteúdo é um objeto com:
+
+- **Tools de logs:** `tool`, `query`, `timespan`, `result`. O campo `result` contém o JSON bruto da API Azure (estrutura com `tables`, cada uma com `columns` e `rows`).  
+  *Nota: em evolução para formato normalizado com `summary`, `tables` (truncadas) e `evidence` — ver [docs/MCP_OBSERVABILITY_REVIEW.md](docs/MCP_OBSERVABILITY_REVIEW.md) e [docs/TODOS.md](docs/TODOS.md).*
+
+- **appservice_logstream_tail:** `tool`, `duration_seconds`, `max_lines`, `contains`, `lines` (array de strings).
+
+---
+
+## Limites e segurança
+
+### Estado atual
+
+- **KQL raw:** Não há tool que aceite KQL arbitrário; todas as queries são montadas internamente. Isso reduz risco de injeção e exfiltração.
+- **Timespan:** Aceito como string (ex.: PT1H, P30D); **não há limite máximo** hoje — um agente pode pedir janelas muito grandes e sobrecarregar a API. Recomendação: aplicar limite (ex.: P30D) em próxima versão.
+- **Quantidade de linhas:** As queries KQL atuais **não usam `take`**; a API pode retornar muitos milhares de linhas. Recomendação: adicionar `take` (ex.: 5000) e documentar o limite.
+- **Credenciais:** Client secret em variável de ambiente; não commitar `.env`. Para produção em Azure, considerar Managed Identity no roadmap.
+- **Multi-workspace:** Um único workspace ou app por processo; não há allowlist de workspaces no código.
+
+### Recomendações (roadmap)
+
+- Validação de argumentos contra JSON Schema em `call_tool`.
+- Limite máximo de timespan (ex.: P30D) e row limit (ex.: 5000) em todas as queries.
+- Respostas normalizadas (summary + tables truncadas) para uso por LLM.
+- Se no futuro existir tool `query_raw_kql`: default desabilitado (env), allowlist de verbos KQL, row limit rígido, sanitização. Ver [docs/MCP_OBSERVABILITY_REVIEW.md](docs/MCP_OBSERVABILITY_REVIEW.md) e [docs/TODOS.md](docs/TODOS.md).
+
+---
+
+## Como rodar
+
+### Servidor MCP (JSON-RPC 2.0 — recomendado para Cursor / Claude Desktop)
 
 ```bash
 python -m src.mcp_protocol_server
 ```
 
-Exemplos de mensagens JSON-RPC 2.0:
+O servidor lê stdin e escreve em stdout (uma linha JSON por mensagem). Configure o cliente MCP para usar esse comando como processo do servidor.
 
-```json
-{"jsonrpc":"2.0","id":1,"method":"initialize","params":{}}
-{"jsonrpc":"2.0","id":2,"method":"tools/list","params":{}}
-{"jsonrpc":"2.0","id":3,"method":"tools/call","params":{"name":"ai_errors_recent","arguments":{"service_name":"api","timespan":"PT1H"}}}
-```
-
-4) Rodar o servidor MCP via stdin/stdout (protocolo simples por JSON-lines - para testes):
+### Servidor MCP simples (JSON-lines, para testes)
 
 ```bash
 python -m src.mcp_stdio_server
@@ -250,3 +154,44 @@ Exemplos de mensagens:
 {"type": "call_tool", "name": "ai_errors_recent", "arguments": {"service_name":"api","timespan":"PT1H"}}
 ```
 
+### CLI de teste (sem cliente MCP)
+
+```bash
+python -m src.cli_test --tool ai_errors_recent --arg service_name=api --arg timespan=PT1H
+```
+
+Com argumentos em JSON:
+
+```bash
+python -m src.cli_test --tool ai_requests_slow --args-json '{"service_name":"api","timespan":"PT1H","duration_threshold_ms":500}'
+```
+
+---
+
+## Troubleshooting
+
+| Sintoma | Possível causa | Ação |
+|--------|-----------------|------|
+| "Variaveis de ambiente obrigatorias ausentes" | Faltam `AZURE_TENANT_ID`, `AZURE_CLIENT_ID` ou `AZURE_CLIENT_SECRET`. | Preencher `.env` e garantir que seja carregado (diretório atual ou caminho do script). |
+| "E necessario fornecer AZURE_APP_ID ou AZURE_WORKSPACE_ID" | Nenhum dos dois foi definido. | Definir um dos dois no `.env`. |
+| "Falha ao obter access token do Entra ID" | Tenant/Client/Secret incorretos ou App Registration sem permissão. | Verificar valores no Azure Portal (App Registration, secrets, API permissions / RBAC no workspace ou no App Insights). |
+| "Falha na consulta KQL" (status 400/403) | Query inválida ou sem permissão no recurso. | Verificar `result.body` na resposta; conferir permissão Log Analytics Reader / Application Insights Data Reader. |
+| "Tool 'X' não registrada" | Nome da tool incorreto ou servidor sem o cliente correspondente. | Chamar `tools/list` e usar o nome exato; para logstream, configurar `APP_SERVICE_NAME` e credenciais de publicação. |
+| Resposta muito grande / timeout | Query sem `take` e janela grande. | Reduzir timespan ou aguardar implementação de row limit (ver TODOS). |
+| Log stream não retorna linhas | App Service pausado, credenciais Kudu erradas ou filtro `contains` excluindo tudo. | Verificar no Portal se o App está rodando; testar sem `contains`; checar usuário/senha de publicação. |
+
+---
+
+## Estrutura do projeto e próximos passos
+
+- **Estrutura atual:** `src/` contém `mcp_server.py`, `mcp_protocol_server.py`, `azure_appinsights.py`, `appservice_logstream.py`, `tools/logs_tools.py`, `tools/appservice_tools.py`, `cli_test.py`.
+- **Proposta de evolução** (pastas/módulos): [docs/STRUCTURE.md](docs/STRUCTURE.md) — inclusão de `guards/`, `queries/`, `models/`, `auth/`, etc.
+- **Plano de execução e TODOs:** [docs/TODOS.md](docs/TODOS.md) — tarefas incrementais (guardrails, respostas normalizadas, novas tools semânticas, testes, auditoria).
+
+Roadmap em 3 etapas (resumo):
+
+1. **~2 semanas:** Limites (timespan, row limit), validação de argumentos, resposta normalizada, tool `get_top_exceptions`.
+2. **4–6 semanas:** Correlation (trace_request, correlate_failures), `compare_windows`, percentis, módulo `queries/`.
+3. **8–12 semanas:** `detect_anomalies`, cache opcional, auditoria, testes unitários e contract tests.
+
+Detalhes completos em [docs/MCP_OBSERVABILITY_REVIEW.md](docs/MCP_OBSERVABILITY_REVIEW.md).
